@@ -1,6 +1,6 @@
 # FireDownload 1.0.0
 
-(!Logo[https://github.com/Dragoland/firedownload/blob/main/assets/Logo.png])
+![Logo][https://github.com/Dragoland/firedownload/blob/main/assets/Logo.png])
 
 Gestor de descargas de vídeo y audio basado en **yt-dlp**, con interfaz **PySide6**
 (tema oscuro con acento azul Arch). Linux, Windows y macOS.
