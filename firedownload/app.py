@@ -1,4 +1,4 @@
-"""Arranque de la aplicación: logging, QApplication, tema y ventana principal."""
+"""Arranque de la aplicación: logging, instancia única, QApplication, tema y ventana principal."""
 
 from __future__ import annotations
 
@@ -8,16 +8,17 @@ import sys
 from logging.handlers import RotatingFileHandler
 from types import TracebackType
 
-from PySide6.QtCore import QLockFile, QTimer
+from PySide6.QtCore import QTimer
 from PySide6.QtGui import QIcon
-from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtWidgets import QApplication
 
 from firedownload import __version__
 from firedownload.config import Paths, Settings
 from firedownload.core.manager import DownloadManager
+from firedownload.core.single_instance import SingleInstance
 from firedownload.core.tasks import shutdown_tasks
 from firedownload.core.thumbs import ThumbnailLoader
-from firedownload.core.utils import find_logo
+from firedownload.core.utils import find_logo, validate_url
 from firedownload.ui.main_window import MainWindow
 from firedownload.ui.theme import apply_theme
 
@@ -44,24 +45,24 @@ def _log_uncaught(exc_type: type[BaseException], exc: BaseException, tb: Traceba
     log.critical("Excepción no capturada", exc_info=(exc_type, exc, tb))
 
 
-def main() -> int:
-    """Punto de entrada común a main.py y python -m firedownload."""
+def main(argv: list[str] | None = None) -> int:
+    """Punto de entrada común a main.py y python -m firedownload. Las URLs pasadas como argumentos se añaden."""
     _setup_logging()
     sys.excepthook = _log_uncaught
+    urls = [arg for arg in (argv if argv is not None else sys.argv[1:]) if validate_url(arg)]
 
-    app = QApplication(sys.argv)
+    app = QApplication(sys.argv[:1])
+    instance = SingleInstance(parent=app)
+    if instance.send_to_running("\n".join(["SHOW", *urls])):
+        return 0
+    instance.listen()
+
     app.setApplicationName("FireDownload")
     app.setApplicationVersion(__version__)
     apply_theme(app)
     logo = find_logo()
     if logo is not None:
         app.setWindowIcon(QIcon(str(logo)))
-
-    lock = QLockFile(str(Paths.LOCK_FILE))
-    lock.setStaleLockTime(0)
-    if not lock.tryLock(200) and lock.error() == QLockFile.LockError.LockFailedError:
-        QMessageBox.warning(None, "FireDownload", "FireDownload ya se está ejecutando.")
-        return 1
 
     settings = Settings.load()
     manager = DownloadManager(settings)
@@ -70,7 +71,10 @@ def main() -> int:
     app.aboutToQuit.connect(shutdown_tasks)
 
     window = MainWindow(settings, manager, loader)
+    instance.message_received.connect(window.handle_external)
     window.show()
+    if urls:
+        QTimer.singleShot(0, lambda: window.handle_external("\n".join(urls)))
 
     signal.signal(signal.SIGINT, lambda *_: app.quit())
     heartbeat = QTimer(app)

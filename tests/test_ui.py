@@ -144,12 +144,26 @@ def test_search_ignores_results_of_a_replaced_search(app_parts, wait):
     assert tab._go.isEnabled()
 
 
-def test_check_dialog_runs_both_steps(app_parts, wait):
+def test_check_dialog_runs_both_steps(app_parts, wait, monkeypatch):
     settings, _manager, _loader = app_parts
+    monkeypatch.setattr("firedownload.ui.check_dialog.find_ffmpeg", lambda: "/usr/bin/ffmpeg")
     dialog = CheckDialog(settings)
     dialog._run.click()
     assert wait(lambda: "2/2 Descarga real" in dialog._report.toPlainText() and dialog._run.isEnabled())
     assert "→ Resultado: OK. Archivos:" in dialog._report.toPlainText()
+    assert "→ Conversión con FFmpeg: OK" in dialog._report.toPlainText()
+    dialog.reject()
+
+
+def test_check_dialog_skips_an_unavailable_test_video(app_parts, wait, monkeypatch):
+    settings, _manager, _loader = app_parts
+    monkeypatch.setenv("FAKE_YTDLP_UNAVAILABLE", "jNQXAC9IAdw")
+    monkeypatch.setattr("firedownload.ui.check_dialog.find_ffmpeg", lambda: None)
+    dialog = CheckDialog(settings)
+    dialog._run.click()
+    assert wait(lambda: "→ Resultado: OK. Archivos:" in dialog._report.toPlainText() and dialog._run.isEnabled())
+    report = dialog._report.toPlainText()
+    assert "probando otro" in report and "BaW_jenozKc" in report
     dialog.reject()
 
 
@@ -214,4 +228,74 @@ def test_about_dialog_has_author_tab(app_parts):
     dialog = AboutDialog(settings)
     tabs = dialog.findChild(QTabWidget)
     assert [tabs.tabText(i) for i in range(tabs.count())] == ["Programa", "Sobre el autor"]
+    dialog.reject()
+
+
+def test_banner_lists_missing_tools(app_parts, monkeypatch):
+    settings, manager, loader = app_parts
+    monkeypatch.setattr("firedownload.ui.download_tab.check_ffmpeg", lambda: False)
+    monkeypatch.setattr("firedownload.ui.download_tab.find_js_runtime", lambda: None)
+    tab = DownloadTab(settings, manager, loader)
+    assert not tab._banner.isHidden()
+    assert "FFmpeg" in tab._banner_label.text() and "Deno" in tab._banner_label.text()
+    monkeypatch.setattr("firedownload.ui.download_tab.check_ffmpeg", lambda: True)
+    monkeypatch.setattr("firedownload.ui.download_tab.find_js_runtime", lambda: ("deno", "/x"))
+    tab.refresh_banner()
+    assert tab._banner.isHidden()
+
+
+def test_profile_applies_visible_options_and_extras_to_the_download(app_parts):
+    settings, manager, loader = app_parts
+    tab = DownloadTab(settings, manager, loader)
+    tab._profile.setCurrentIndex(tab._profile.findData("Música · MP3 con carátula"))
+    assert tab._audio_only.isChecked() and tab._audio_format.currentText() == "mp3"
+    tab._url.setText(VIDEO)
+    tab._add.click()
+    options = next(iter(manager.items.values())).options
+    assert options["audio_only"] is True and options["embed_thumbnail"] is True and options["embed_metadata"] is True
+
+
+def test_custom_profile_can_be_saved_and_deleted(app_parts, monkeypatch):
+    settings, manager, loader = app_parts
+    monkeypatch.setattr("firedownload.ui.download_tab.QInputDialog.getText", lambda *a, **k: ("Mi perfil", True))
+    tab = DownloadTab(settings, manager, loader)
+    tab._quality.setCurrentText("720p")
+    tab._profile_save.click()
+    assert "Mi perfil" in settings.profiles and tab._profile.currentData() == "Mi perfil"
+    assert tab._profile_delete.isEnabled()
+    tab._profile_delete.click()
+    assert "Mi perfil" not in settings.profiles
+
+
+def test_queue_buttons_reorder_cards(app_parts, wait, monkeypatch):
+    settings, manager, loader = app_parts
+    monkeypatch.setenv("FAKE_YTDLP_DELAY", "0.3")
+    settings.max_concurrent = 1
+    tab = DownloadTab(settings, manager, loader)
+    for i in range(3):
+        manager.add(VIDEO + f"&n={i}")
+    ids = list(manager.items)
+    manager.move(ids[2], -1)
+    layout = tab._cards_layout
+    order = [layout.itemAt(i).widget() for i in range(layout.count()) if layout.itemAt(i).widget() in tab._cards.values()]
+    assert [next(k for k, v in tab._cards.items() if v is w) for w in order] == list(manager.items)
+
+
+def test_info_dialog_builds_sections_from_range_and_chapters(app_parts, wait):
+    settings, _manager, loader = app_parts
+    dialog = InfoDialog(VIDEO, settings, loader)
+    assert wait(lambda: dialog.info is not None)
+    dialog._cut_start.setText("1:00")
+    dialog._cut_end.setText("2:30")
+    assert dialog.options()["sections"] == ["*60-150"]
+    dialog._cut_end.setText("")
+    assert dialog.options()["sections"] == ["*60-inf"]
+    dialog.reject()
+
+
+def test_tools_dialog_lists_the_three_tools(app_parts):
+    from firedownload.ui.tools_dialog import ToolsDialog
+
+    dialog = ToolsDialog()
+    assert [row._name for row in dialog._rows] == ["yt-dlp", "ffmpeg", "deno"]
     dialog.reject()

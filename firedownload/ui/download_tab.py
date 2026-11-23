@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFrame,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMessageBox,
@@ -26,10 +27,12 @@ from PySide6.QtWidgets import (
 )
 
 from firedownload.config import AUDIO_FORMATS, QUALITIES, VIDEO_FORMATS, Settings, Sites
+from firedownload.core import profiles
 from firedownload.core.manager import DownloadItem, DownloadManager, Status
 from firedownload.core.thumbs import ThumbnailLoader, cover
 from firedownload.core.utils import (
     check_ffmpeg,
+    find_js_runtime,
     find_ytdlp,
     format_size,
     free_space,
@@ -107,6 +110,12 @@ class DownloadCard(QFrame):
         self._open = QPushButton("Abrir carpeta")
         self._retry = QPushButton("Reintentar")
         self._copy = QPushButton("Copiar detalle")
+        self._up = QPushButton("▲")
+        self._down = QPushButton("▼")
+        self._first = QPushButton("Primero")
+        self._up.setToolTip("Subir en la cola")
+        self._down.setToolTip("Bajar en la cola")
+        self._first.setToolTip("Descargar esta la primera")
         self._remove = QPushButton("Quitar")
         self._toggle.clicked.connect(self._on_toggle)
         self._cancel.clicked.connect(lambda: manager.cancel(item.id))
@@ -114,11 +123,14 @@ class DownloadCard(QFrame):
         self._open.clicked.connect(self._open_folder)
         self._retry.clicked.connect(lambda: manager.retry(item.id))
         self._copy.clicked.connect(self._copy_details)
+        self._up.clicked.connect(lambda: manager.move(item.id, -1))
+        self._down.clicked.connect(lambda: manager.move(item.id, 1))
+        self._first.clicked.connect(lambda: manager.prioritize(item.id))
         self._remove.clicked.connect(lambda: manager.remove(item.id))
 
         bottom = QHBoxLayout()
         bottom.addWidget(self._state, 1)
-        for button in (self._toggle, self._cancel, self._play, self._open, self._retry, self._copy, self._remove):
+        for button in (self._up, self._down, self._first, self._toggle, self._cancel, self._play, self._open, self._retry, self._copy, self._remove):
             bottom.addWidget(button)
         body = QVBoxLayout()
         body.setSpacing(6)
@@ -160,6 +172,8 @@ class DownloadCard(QFrame):
             self._toggle.setText("Reanudar" if status in (Status.PAUSED, Status.PENDING) else "Pausar")
             self._cancel.setVisible(running or waiting or status is Status.QUEUED)
             self._copy.setVisible(status is Status.FAILED)
+            for button in (self._up, self._down, self._first):
+                button.setVisible(status is Status.QUEUED)
             self._play.setVisible(status is Status.COMPLETED)
             self._open.setVisible(status is Status.COMPLETED)
             self._retry.setVisible(status in (Status.FAILED, Status.CANCELLED))
@@ -229,6 +243,7 @@ class DownloadTab(QWidget):
     """Formulario de alta de descargas y lista de tarjetas."""
 
     analyze_requested = Signal(str, bool)
+    tools_requested = Signal()
     status_message = Signal(str)
 
     def __init__(
@@ -277,13 +292,22 @@ class DownloadTab(QWidget):
         self._empty.setObjectName("muted")
         self._empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        self._ffmpeg_banner = QLabel(
-            "FFmpeg no está instalado: los vídeos se descargan en un solo archivo (calidad limitada) "
-            "y no se puede extraer audio ni incrustar subtítulos."
-        )
-        self._ffmpeg_banner.setObjectName("warning")
-        self._ffmpeg_banner.setWordWrap(True)
-        self._ffmpeg_banner.setVisible(not check_ffmpeg())
+        self._banner_label = QLabel()
+        self._banner_label.setObjectName("warning")
+        self._banner_label.setWordWrap(True)
+        self._banner_button = QPushButton("Instalar…")
+        self._banner_button.setObjectName("primary")
+        self._banner_button.clicked.connect(self.tools_requested)
+        self._banner = QWidget()
+        banner_row = QHBoxLayout(self._banner)
+        banner_row.setContentsMargins(0, 0, 0, 0)
+        banner_row.addWidget(self._banner_label, 1)
+        banner_row.addWidget(self._banner_button)
+
+        self._profile = QComboBox()
+        self._profile_save = QPushButton("Guardar perfil…")
+        self._profile_delete = QPushButton("Eliminar")
+        self._profile_extra: dict[str, object] = {}
 
         url_row = QHBoxLayout()
         url_row.addWidget(self._url, 1)
@@ -305,6 +329,14 @@ class DownloadTab(QWidget):
         options_row.addStretch(1)
         options_row.addWidget(self._import)
 
+        profile_row = QHBoxLayout()
+        profile_label = QLabel("Perfil")
+        profile_label.setObjectName("muted")
+        profile_row.addWidget(profile_label)
+        profile_row.addWidget(self._profile, 1)
+        profile_row.addWidget(self._profile_save)
+        profile_row.addWidget(self._profile_delete)
+
         status_row = QHBoxLayout()
         status_row.addWidget(self._summary, 1)
         status_row.addWidget(self._resume_pending)
@@ -324,9 +356,10 @@ class DownloadTab(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(18, 16, 18, 12)
         layout.setSpacing(12)
-        layout.addWidget(self._ffmpeg_banner)
+        layout.addWidget(self._banner)
         layout.addLayout(url_row)
         layout.addLayout(options_row)
+        layout.addLayout(profile_row)
         layout.addLayout(status_row)
         layout.addWidget(scroll, 1)
 
@@ -344,6 +377,12 @@ class DownloadTab(QWidget):
         manager.status_changed.connect(self._update_summary)
         manager.queue_changed.connect(self._update_summary)
         QGuiApplication.clipboard().dataChanged.connect(self._on_clipboard)
+        manager.order_changed.connect(self._sync_order)
+        self._profile.currentIndexChanged.connect(self._on_profile_changed)
+        self._profile_save.clicked.connect(self._save_profile)
+        self._profile_delete.clicked.connect(self._delete_profile)
+        self._reload_profiles()
+        self.refresh_banner()
         self._sync_enabled()
         self._update_summary()
 
@@ -380,6 +419,7 @@ class DownloadTab(QWidget):
             full_playlists = set(playlists)
         for url in urls:
             options = self._settings.download_options()
+            options.update(self._profile_extra)
             if url in full_playlists:
                 options["download_playlist"] = True
             self._manager.add(url, options, title=title, thumbnail=thumbnail)
@@ -400,6 +440,84 @@ class DownloadTab(QWidget):
         if choose is not None and clicked == choose:
             return "choose"
         return "cancel"
+
+    def refresh_banner(self) -> None:
+        """Muestra qué herramientas faltan (o se oculta si no falta ninguna)."""
+        missing = []
+        if find_ytdlp() is None:
+            missing.append("yt-dlp (imprescindible)")
+        if not check_ffmpeg():
+            missing.append("FFmpeg (sin él: un solo archivo, calidad limitada y sin conversión de audio)")
+        if find_js_runtime() is None:
+            missing.append("Deno (sin él, YouTube puede fallar)")
+        self._banner_label.setText("Faltan herramientas: " + "; ".join(missing) + "." if missing else "")
+        self._banner.setVisible(bool(missing))
+
+    def _sync_order(self) -> None:
+        """Reordena las tarjetas según el orden de la cola."""
+        for card in self._cards.values():
+            self._cards_layout.removeWidget(card)
+        for item_id in self._manager.items:
+            card = self._cards.get(item_id)
+            if card is not None:
+                self._cards_layout.insertWidget(self._cards_layout.count() - 1, card)
+
+    _PROFILE_VISIBLE = ("quality", "video_format", "audio_only", "audio_format", "download_playlist")
+
+    def _reload_profiles(self, select: str | None = None) -> None:
+        self._profile.blockSignals(True)
+        self._profile.clear()
+        self._profile.addItem("Sin perfil", None)
+        for name in profiles.all_profiles(self._settings):
+            self._profile.addItem(name, name)
+        index = self._profile.findData(select) if select else 0
+        self._profile.setCurrentIndex(max(index, 0))
+        self._profile.blockSignals(False)
+        self._on_profile_changed()
+
+    def _on_profile_changed(self) -> None:
+        name = self._profile.currentData()
+        values = profiles.all_profiles(self._settings).get(name, {}) if name else {}
+        self._profile_delete.setEnabled(bool(name) and name in self._settings.profiles)
+        self._profile_extra = {k: v for k, v in values.items() if k not in self._PROFILE_VISIBLE}
+        if "quality" in values:
+            self._quality.setCurrentText(values["quality"])
+        if "video_format" in values:
+            self._video_format.setCurrentText(values["video_format"])
+        if "audio_format" in values:
+            self._audio_format.setCurrentText(values["audio_format"])
+        if "audio_only" in values:
+            self._audio_only.setChecked(bool(values["audio_only"]))
+        if "download_playlist" in values:
+            self._playlist.setChecked(bool(values["download_playlist"]))
+
+    def _save_profile(self) -> None:
+        name, ok = QInputDialog.getText(self, "Guardar perfil", "Nombre del perfil:")
+        name = name.strip()[:40]
+        if not ok or not name:
+            return
+        if name in profiles.BUILTIN_PROFILES:
+            QMessageBox.warning(self, "Nombre reservado", "Ese nombre pertenece a un perfil predefinido.")
+            return
+        self._store_quick_options()
+        snapshot = profiles.snapshot(self._settings)
+        snapshot.update(self._profile_extra)
+        self._settings.profiles[name] = snapshot
+        try:
+            self._settings.save()
+        except OSError:
+            log.exception("No se pudo guardar el perfil")
+        self._reload_profiles(select=name)
+
+    def _delete_profile(self) -> None:
+        name = self._profile.currentData()
+        if name and name in self._settings.profiles:
+            del self._settings.profiles[name]
+            try:
+                self._settings.save()
+            except OSError:
+                log.exception("No se pudo guardar la configuración")
+            self._reload_profiles()
 
     def _store_quick_options(self) -> None:
         s = self._settings

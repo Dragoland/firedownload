@@ -22,7 +22,9 @@ from PySide6.QtWidgets import (
 
 from firedownload import __version__
 from firedownload.config import Settings
+from firedownload.core import notify
 from firedownload.core.manager import DownloadManager, Status
+from firedownload.core.tasks import YtdlpTask
 from firedownload.core.thumbs import ThumbnailLoader
 from firedownload.core.utils import (
     check_ffmpeg,
@@ -31,7 +33,9 @@ from firedownload.core.utils import (
     find_ytdlp,
     format_speed,
     is_playlist_url,
+    ytdlp_is_outdated,
 )
+from firedownload.core.ytdlp import ytdlp_command
 from firedownload.ui.about_dialog import AboutDialog
 from firedownload.ui.check_dialog import CheckDialog
 from firedownload.ui.download_tab import DownloadTab
@@ -40,6 +44,7 @@ from firedownload.ui.info_dialog import InfoDialog
 from firedownload.ui.log_dialog import LogDialog
 from firedownload.ui.search_tab import SearchTab
 from firedownload.ui.settings_tab import SettingsTab
+from firedownload.ui.tools_dialog import ToolsDialog
 
 
 class MainWindow(QMainWindow):
@@ -75,6 +80,10 @@ class MainWindow(QMainWindow):
         self._build_menus()
 
         self._speed = QLabel()
+        self._warnings = QLabel()
+        self._warnings.setObjectName("warning")
+        self._ytdlp_outdated = ""
+        self.statusBar().addPermanentWidget(self._warnings)
         self.statusBar().addPermanentWidget(self._speed)
         self._speed_timer = QTimer(self)
         self._speed_timer.timeout.connect(self._update_speed)
@@ -87,7 +96,10 @@ class MainWindow(QMainWindow):
         self._search_tab.download_requested.connect(self._download_from_search)
         self._history_tab.redownload_requested.connect(self._redownload)
         self._settings_tab.settings_saved.connect(self._on_settings_saved)
-        self._show_dependency_warnings()
+        self._download_tab.tools_requested.connect(self.show_tools)
+        self._settings_tab.tools_requested.connect(self.show_tools)
+        self._refresh_warnings()
+        QTimer.singleShot(0, self._startup_checks)
         restored = manager.restore()
         if restored:
             self.statusBar().showMessage(
@@ -157,6 +169,7 @@ class MainWindow(QMainWindow):
         self._add_action(view, "Buscar vídeos…", self._focus_search, "Ctrl+F")
 
         help_menu = bar.addMenu("A&yuda")
+        self._add_action(help_menu, "Herramientas (yt-dlp, FFmpeg, Deno)…", self.show_tools)
         self._add_action(help_menu, "Comprobar instalación…", lambda: CheckDialog(self._settings, self).exec())
         self._add_action(help_menu, "Ver registro…", lambda: LogDialog(self).exec())
         help_menu.addSeparator()
@@ -180,18 +193,60 @@ class MainWindow(QMainWindow):
         else:
             self._speed.setText("")
 
-    def _show_dependency_warnings(self) -> None:
+    def _refresh_warnings(self) -> None:
         warnings = []
         if find_ytdlp() is None:
             warnings.append("yt-dlp no encontrado")
+        elif self._ytdlp_outdated:
+            warnings.append(f"yt-dlp desactualizado ({self._ytdlp_outdated})")
         if find_js_runtime() is None:
             warnings.append("Sin Deno/Node: YouTube puede fallar")
         if not check_ffmpeg():
-            warnings.append("FFmpeg no encontrado: no funcionarán audio, unión de formatos, subtítulos incrustados ni metadatos")
-        if warnings:
-            label = QLabel(" · ".join(warnings))
-            label.setObjectName("warning")
-            self.statusBar().addPermanentWidget(label)
+            warnings.append("Sin FFmpeg: calidad limitada, sin conversión de audio")
+        self._warnings.setText(" · ".join(warnings))
+        self._download_tab.refresh_banner()
+
+    def _startup_checks(self) -> None:
+        """Ofrece instalar lo que falte y avisa si yt-dlp está desactualizado."""
+        if find_ytdlp() is None:
+            self.show_tools()
+            return
+        command = ytdlp_command(["--version"])
+        if command is not None:
+            self._version_task = YtdlpTask(command, 20)
+            self._version_task.succeeded.connect(self._on_ytdlp_version)
+            self._version_task.start()
+
+    def _on_ytdlp_version(self, output: str) -> None:
+        version = output.strip()
+        self._ytdlp_outdated = version if ytdlp_is_outdated(version) else ""
+        self._refresh_warnings()
+
+    def show_tools(self) -> None:
+        dialog = ToolsDialog(self)
+        dialog.tools_changed.connect(self._on_tools_changed)
+        dialog.exec()
+        self._on_tools_changed()
+
+    def _on_tools_changed(self) -> None:
+        self._ytdlp_outdated = ""
+        self._refresh_warnings()
+        self._settings_tab.refresh_version()
+        self._startup_version_check()
+
+    def _startup_version_check(self) -> None:
+        if find_ytdlp() is not None:
+            self._startup_checks()
+
+    def handle_external(self, message: str) -> None:
+        """Mensaje de otra instancia: trae la ventana al frente y añade las URLs recibidas."""
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+        urls = [line.strip() for line in message.splitlines() if line.strip().startswith("http")]
+        if urls:
+            self._tabs.setCurrentWidget(self._download_tab)
+            self._download_tab.add_urls(urls)
 
     def show_details(self, url: str, playlist: bool = False) -> None:
         """Abre el visor de metadatos y encola la descarga si el usuario acepta."""
@@ -212,6 +267,8 @@ class MainWindow(QMainWindow):
         if item is not None and item.status is not Status.CANCELLED:
             verdict = "Completado" if ok else "Falló"
             self.statusBar().showMessage(f"{verdict}: {item.display_title}", 6000)
+            if self._settings.notifications and not self.isActiveWindow():
+                notify.send(f"FireDownload · {verdict}", item.display_title)
 
     def _on_settings_saved(self) -> None:
         self._manager.apply_settings()

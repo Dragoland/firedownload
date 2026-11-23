@@ -46,6 +46,7 @@ _PHASES: tuple[tuple[str, str], ...] = (
 )
 _ITEM_RE = re.compile(r"\[download\]\s+Downloading (?:item|video) (\d+) of (\d+)")
 _STREAM_FILE_RE = re.compile(r"\.f[\w\-=+]+\.\w+$")
+_ARCHIVE_RE = re.compile(r"has already been recorded in the archive")
 _SUBTITLE_RE = re.compile(r"\[info\]\s+Writing video subtitles to:\s+(.+)")
 _CONVERTED_RE = re.compile(r"\[SubtitlesConvertor\]")
 class DownloadWorker(QThread):
@@ -79,6 +80,7 @@ class DownloadWorker(QThread):
         self._tail: deque[str] = deque(maxlen=40)
         self._command_line = ""
         self._seen_progress = False
+        self._skipped = False
 
     @property
     def cancelled(self) -> bool:
@@ -119,11 +121,18 @@ class DownloadWorker(QThread):
             )
             return
 
-        outcome = self._attempt(command, js=True)
+        js = True
+        outcome = self._attempt(command, js=js)
         if outcome is not None and outcome[0] != 0 and js_runtime_args() and self._unsupported_option():
             log.warning("Este yt-dlp no admite las opciones de JavaScript; reintentando sin ellas")
             self._reset_state()
-            outcome = self._attempt(command, js=False)
+            js = False
+            outcome = self._attempt(command, js=js)
+        if outcome is not None and outcome[0] != 0 and not self._cancelled and self._format_unavailable():
+            log.warning("Formato no disponible; reintentando con un selector sin restricciones")
+            self.phase.emit(self.item_id, "Reintentando con otro formato…")
+            self._reset_state()
+            outcome = self._attempt(command, js=js, fallback=True)
         if outcome is None:
             return
         code, errors = outcome
@@ -137,6 +146,8 @@ class DownloadWorker(QThread):
             self.finished_sig.emit(self.item_id, False, "Cancelado", result_path)
         elif code == 0 and result_path:
             self.finished_sig.emit(self.item_id, True, "Completado", result_path)
+        elif code == 0 and self._skipped:
+            self.finished_sig.emit(self.item_id, True, "Ya estaba en el archivo de descargas", "")
         elif code == 0:
             self.finished_sig.emit(
                 self.item_id, False, "yt-dlp terminó sin descargar ningún archivo. Usa «Copiar detalle» para ver su salida.", ""
@@ -144,6 +155,11 @@ class DownloadWorker(QThread):
         else:
             reason = errors[-1] if errors else f"yt-dlp terminó con código {code}"
             self.finished_sig.emit(self.item_id, False, humanize_error(reason), "")
+
+    def _format_unavailable(self) -> bool:
+        if self._options.get("audio_only") or self._options.get("subs_mode") == "only":
+            return False
+        return any("requested format is not available" in line.lower() for line in self._tail)
 
     def _unsupported_option(self) -> bool:
         return any("no such option" in line.lower() for line in self._tail)
@@ -153,13 +169,16 @@ class DownloadWorker(QThread):
         self._item_index, self._item_total = 1, 1
         self._streams_seen, self._streams_total, self._stream_index = 0, 1, 0
         self._seen_progress = False
+        self._skipped = False
         self._tail.clear()
         with self._lock:
             self._proc = None
 
-    def _attempt(self, command: tuple[str, ...], *, js: bool) -> tuple[int, list[str]] | None:
+    def _attempt(
+        self, command: tuple[str, ...], *, js: bool, fallback: bool = False
+    ) -> tuple[int, list[str]] | None:
         """Lanza yt-dlp una vez. Devuelve (código, errores) o None si ya se informó el final."""
-        args = [*command, *build_args(self.url, self._options, ffmpeg=check_ffmpeg(), js=js)]
+        args = [*command, *build_args(self.url, self._options, ffmpeg=check_ffmpeg(), js=js, fallback=fallback)]
         self._command_line = shlex.join(args)
         env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1"}
         extra: dict[str, Any] = {}
@@ -240,6 +259,9 @@ class DownloadWorker(QThread):
             return
         self._tail.append(line)
         self._announce_phase(line)
+        if _ARCHIVE_RE.search(line):
+            self._skipped = True
+            return
         match = _ITEM_RE.search(line)
         if match:
             self._item_index, self._item_total = int(match.group(1)), max(int(match.group(2)), 1)

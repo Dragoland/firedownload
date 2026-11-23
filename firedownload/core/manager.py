@@ -94,6 +94,7 @@ class DownloadManager(QObject):
     progress_updated = Signal(str)
     status_changed = Signal(str)
     queue_changed = Signal()
+    order_changed = Signal()
     download_finished = Signal(str, bool)
 
     def __init__(self, settings: Settings, parent: QObject | None = None) -> None:
@@ -104,7 +105,7 @@ class DownloadManager(QObject):
         self.paused: dict[str, DownloadWorker] = {}
         self.items: dict[str, DownloadItem] = {}
         self._closing = False
-        for signal in (self.item_added, self.item_removed, self.status_changed):
+        for signal in (self.item_added, self.item_removed, self.status_changed, self.order_changed):
             signal.connect(self._persist)
 
     @property
@@ -158,6 +159,34 @@ class DownloadManager(QObject):
         self.status_changed.emit(item_id)
         self.queue_changed.emit()
         self._pump()
+
+    def move(self, item_id: str, offset: int) -> None:
+        """Mueve una descarga en cola `offset` posiciones (negativo = antes)."""
+        item = self.items.get(item_id)
+        if item is None or item.status is not Status.QUEUED:
+            return
+        queue = list(self.queue)
+        index = queue.index(item)
+        target = min(max(index + offset, 0), len(queue) - 1)
+        if target == index:
+            return
+        queue.insert(target, queue.pop(index))
+        self.queue = deque(queue)
+        self._sync_items_order()
+        self.order_changed.emit()
+        self.queue_changed.emit()
+
+    def prioritize(self, item_id: str) -> None:
+        """Pone una descarga en cola la primera."""
+        self.move(item_id, -len(self.queue))
+
+    def _sync_items_order(self) -> None:
+        """Refleja el orden de la cola en `items` (las demás posiciones no cambian)."""
+        ids = list(self.items)
+        slots = [n for n, key in enumerate(ids) if self.items[key].status is Status.QUEUED]
+        for slot, item in zip(slots, self.queue):
+            ids[slot] = item.id
+        self.items = {key: self.items[key] for key in ids}
 
     def pause_all(self) -> None:
         for item_id in list(self.active):
@@ -333,10 +362,11 @@ class DownloadManager(QObject):
             if file_path:
                 item.file_path = file_path
                 item.title = item.title or _title_from_path(file_path)
-            try:
-                history.add(item.to_history())
-            except OSError:
-                log.exception("No se pudo guardar el historial")
+            if item.file_path:
+                try:
+                    history.add(item.to_history())
+                except OSError:
+                    log.exception("No se pudo guardar el historial")
             if self._settings.enable_sounds:
                 sounds.play_complete()
         elif cancelled:

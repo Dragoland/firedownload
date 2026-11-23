@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import importlib.util
-import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from firedownload.config import _ITEMS_RE, FILENAME_TEMPLATES, quality_height
-from firedownload.core.utils import find_js_runtime, find_ytdlp
+from firedownload.config import _ITEMS_RE, FILENAME_TEMPLATES, SECTION_RE, Paths, quality_height
+from firedownload.core.utils import find_js_runtime, find_tool, find_ytdlp
 
 _THUMBNAIL_EXTS = frozenset({"mp3", "m4a", "opus", "flac", "mp4", "mkv"})
 
@@ -44,14 +43,13 @@ def ytdlp_command(args: Sequence[str]) -> list[str] | None:
     return [*base, *args] if base else None
 
 
-def update_command() -> list[str] | None:
-    """Comando para actualizar yt-dlp."""
-    if not getattr(sys, "frozen", False):
-        return [sys.executable, "-m", "pip", "install", "-U", "yt-dlp[default]"]
-    return ytdlp_command(["-U"])
+def ffmpeg_location_args() -> list[str]:
+    """Si FFmpeg lo instaló la app, le dice a yt-dlp dónde está."""
+    managed = find_tool("ffmpeg")
+    return ["--ffmpeg-location", str(managed.parent)] if managed else []
 
 
-def js_runtime_args() -> list[str]:
+def js_runtime_args(*, allow_remote: bool = False) -> list[str]:
     """Indica a yt-dlp qué runtime de JavaScript usar (necesario para YouTube)."""
     runtime = find_js_runtime()
     if runtime is None:
@@ -59,17 +57,21 @@ def js_runtime_args() -> list[str]:
     name, path = runtime
     args = ["--js-runtimes", f"{name}:{path}"]
     base = find_ytdlp()
-    if base and base[1:3] == ("-m", "yt_dlp") and importlib.util.find_spec("yt_dlp_ejs") is None:
+    if allow_remote and base and base[1:3] == ("-m", "yt_dlp") and importlib.util.find_spec("yt_dlp_ejs") is None:
         args += ["--remote-components", "ejs:github"]
     return args
 
 
 def common_args(options: Mapping[str, Any], *, js: bool = True) -> list[str]:
-    """Argumentos de red compartidos por descargas, metadatos y búsquedas."""
-    args: list[str] = js_runtime_args() if js else []
+    """Argumentos de entorno compartidos por descargas, metadatos y búsquedas."""
+    args: list[str] = js_runtime_args(allow_remote=bool(options.get("allow_remote_components"))) if js else []
+    args += ffmpeg_location_args()
     if options.get("proxy"):
         args += ["--proxy", str(options["proxy"])]
-    if options.get("cookies_browser"):
+    cookies_file = str(options.get("cookies_file") or "")
+    if cookies_file and Path(cookies_file).is_file():
+        args += ["--cookies", cookies_file]
+    elif options.get("cookies_browser"):
         args += ["--cookies-from-browser", str(options["cookies_browser"])]
     return args
 
@@ -84,8 +86,15 @@ def format_selector(height: int | None, langs: Sequence[str]) -> str:
     return f"bv*{cap}{tracks}/bv*{cap}+ba[language^={langs[0]}]/{plain}"
 
 
-def build_args(url: str, options: Mapping[str, Any], *, ffmpeg: bool = True, js: bool = True) -> list[str]:
-    """Argumentos de yt-dlp para una descarga."""
+def build_args(
+    url: str,
+    options: Mapping[str, Any],
+    *,
+    ffmpeg: bool = True,
+    js: bool = True,
+    fallback: bool = False,
+) -> list[str]:
+    """Argumentos de yt-dlp para una descarga. `fallback` usa un selector de formato sin restricciones."""
     retries = str(options["retries"])
     audio_only = bool(options["audio_only"])
     langs = list(options.get("audio_langs") or [])
@@ -109,6 +118,10 @@ def build_args(url: str, options: Mapping[str, Any], *, ffmpeg: bool = True, js:
         args += ["--playlist-items", items]
     if options.get("speed_limit"):
         args += ["--limit-rate", str(options["speed_limit"])]
+    if options.get("use_archive"):
+        args += ["--download-archive", str(Paths.ARCHIVE_FILE)]
+    if options.get("overwrite") == "overwrite":
+        args.append("--force-overwrites")
 
     if sub_mode == "embed" and (audio_only or not ffmpeg):
         sub_mode = "files"
@@ -131,6 +144,11 @@ def build_args(url: str, options: Mapping[str, Any], *, ffmpeg: bool = True, js:
     elif audio_only:
         container = "m4a"
         args += ["-f", "ba[ext=m4a]/ba/b"]
+    elif fallback:
+        container = str(options["video_format"])
+        args += ["-f", "bv*+ba/b" if ffmpeg else "b"]
+        if ffmpeg:
+            args += ["--merge-output-format", container]
     elif ffmpeg:
         multi = len(langs) > 1
         container = "mkv" if multi else str(options["video_format"])
@@ -144,6 +162,16 @@ def build_args(url: str, options: Mapping[str, Any], *, ffmpeg: bool = True, js:
         limit = f"[height<={cap}]" if cap else ""
         args += ["-f", f"b{limit}/b"]
 
+    sections = [x for x in (options.get("sections") or []) if SECTION_RE.match(str(x))]
+    if ffmpeg and sections:
+        for section in sections:
+            args += ["--download-sections", str(section)]
+        args.append("--force-keyframes-at-cuts")
+    sponsorblock = options.get("sponsorblock", "off")
+    if ffmpeg and sponsorblock == "remove":
+        args += ["--sponsorblock-remove", "sponsor,selfpromo,interaction"]
+    elif ffmpeg and sponsorblock == "mark":
+        args += ["--sponsorblock-mark", "all"]
     if ffmpeg and options.get("embed_metadata"):
         args.append("--embed-metadata")
     if ffmpeg and options.get("embed_thumbnail") and container in _THUMBNAIL_EXTS:

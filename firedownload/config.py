@@ -36,13 +36,14 @@ class Paths:
     CONFIG_FILE = BASE / "config.json"
     HISTORY_FILE = BASE / "history.json"
     QUEUE_FILE = BASE / "queue.json"
-    LOCK_FILE = BASE / "app.lock"
+    ARCHIVE_FILE = BASE / "archive.txt"
+    BIN = BASE / "bin"
     LOG_FILE = LOGS / "app.log"
 
     @classmethod
     def ensure(cls) -> None:
         """Crea las carpetas de la aplicación si no existen."""
-        for folder in (cls.BASE, cls.CACHE, cls.LOGS):
+        for folder in (cls.BASE, cls.CACHE, cls.LOGS, cls.BIN):
             folder.mkdir(parents=True, exist_ok=True)
 
 
@@ -95,11 +96,23 @@ FILENAME_TEMPLATES: tuple[str, ...] = (
     "%(title)s [%(id)s].%(ext)s",
     "%(playlist_index)s - %(title)s.%(ext)s",
 )
+SPONSORBLOCK_MODES: dict[str, str] = {
+    "off": "No usar SponsorBlock",
+    "mark": "Marcar segmentos como capítulos",
+    "remove": "Eliminar patrocinios y autopromoción",
+}
+OVERWRITE_MODES: dict[str, str] = {"skip": "Omitir (no volver a descargar)", "overwrite": "Sobrescribir"}
+PROFILE_KEYS = frozenset({
+    "quality", "video_format", "audio_format", "audio_only", "download_playlist", "audio_langs",
+    "subs_mode", "subs_langs", "subs_auto", "embed_metadata", "embed_thumbnail", "sponsorblock",
+})
+MAX_PROFILES = 20
 SEARCH_SOURCES: dict[str, str] = {"YouTube": "ytsearch", "SoundCloud": "scsearch"}
 SEARCH_LIMIT = 20
 MAX_CONCURRENT_LIMIT = 5
 MAX_RETRIES_LIMIT = 10
 
+SECTION_RE = re.compile(r"^\*\d+(\.\d+)?-(\d+(\.\d+)?|inf)$")
 _ITEMS_RE = re.compile(r"^\d+(-\d+)?(,\d+(-\d+)?)*$")
 _QUALITY_RE = re.compile(r"^\d{3,4}p$")
 _LANG_RE = re.compile(r"^[A-Za-z0-9_.\-]{1,24}$")
@@ -179,6 +192,13 @@ class Settings:
     monitor_clipboard: bool = False
     window_size: list[int] = field(default_factory=lambda: [960, 700])
     last_tab: int = 0
+    cookies_file: str = ""
+    use_archive: bool = False
+    sponsorblock: str = "off"
+    overwrite: str = "skip"
+    notifications: bool = True
+    allow_remote_components: bool = False
+    profiles: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         """Sanea valores corruptos o editados a mano."""
@@ -200,6 +220,12 @@ class Settings:
         size = list(self.window_size) if isinstance(self.window_size, (list, tuple)) and len(self.window_size) == 2 else [960, 700]
         self.window_size = [_clamp(size[0], 640, 10000, 960), _clamp(size[1], 480, 10000, 700)]
         self.last_tab = _clamp(self.last_tab, 0, 3, 0)
+        self.cookies_file = str(self.cookies_file).strip()
+        if self.sponsorblock not in SPONSORBLOCK_MODES:
+            self.sponsorblock = "off"
+        if self.overwrite not in OVERWRITE_MODES:
+            self.overwrite = "skip"
+        self.profiles = _clean_profiles(self.profiles)
         self.audio_langs = lang_list(self.audio_langs)
         self.subs_langs = lang_list(self.subs_langs)
         self.speed_limit = str(self.speed_limit).strip()
@@ -211,6 +237,7 @@ class Settings:
         for name in (
             "audio_only", "download_playlist", "enable_sounds", "subs_auto",
             "embed_metadata", "embed_thumbnail", "monitor_clipboard",
+            "use_archive", "notifications", "allow_remote_components",
         ):
             setattr(self, name, bool(getattr(self, name)))
 
@@ -230,7 +257,7 @@ class Settings:
     def download_options(self) -> dict[str, Any]:
         """Opciones que viajan con cada descarga (copia independiente)."""
         data = asdict(self)
-        for key in ("max_concurrent", "enable_sounds", "monitor_clipboard", "window_size", "last_tab"):
+        for key in ("max_concurrent", "enable_sounds", "monitor_clipboard", "window_size", "last_tab", "notifications", "profiles"):
             data.pop(key)
         return data
 
@@ -240,7 +267,30 @@ def sanitize_options(raw: Any) -> dict[str, Any]:
     data = raw if isinstance(raw, dict) else {}
     known = {f.name for f in fields(Settings)}
     options = Settings(**{k: v for k, v in data.items() if k in known}).download_options()
+    sections = [x for x in (data.get("sections") or []) if isinstance(x, str) and SECTION_RE.match(x)]
+    if sections:
+        options["sections"] = sections[:50]
     items = str(data.get("playlist_items") or "").replace(" ", "")
     if _ITEMS_RE.match(items):
         options["playlist_items"] = items
     return options
+
+
+def sanitize_profile(raw: Any) -> dict[str, Any]:
+    """Valida un perfil: solo claves permitidas y con las mismas reglas que Settings."""
+    if not isinstance(raw, dict):
+        return {}
+    keys = PROFILE_KEYS & raw.keys()
+    probe = Settings(**{k: raw[k] for k in keys})
+    return {k: getattr(probe, k) for k in sorted(keys)}
+
+
+def _clean_profiles(raw: Any) -> dict[str, dict[str, Any]]:
+    if not isinstance(raw, dict):
+        return {}
+    cleaned: dict[str, dict[str, Any]] = {}
+    for name, values in raw.items():
+        title = str(name).strip()[:40]
+        if title and isinstance(values, dict) and len(cleaned) < MAX_PROFILES:
+            cleaned[title] = sanitize_profile(values)
+    return cleaned

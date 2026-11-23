@@ -1,55 +1,76 @@
 # FireDownload 1.0.0
 
-![Logo](https://raw.githubusercontent.com/Dragoland/firedownload/main/assets/Logo.png)
-
 Gestor de descargas de vídeo y audio basado en **yt-dlp**, con interfaz **PySide6**
-(tema oscuro con acento azul Arch). Linux, Windows y macOS.
+(tema oscuro con acento azul Arch). Linux, Windows y macOS. Licencia **MIT**.
 
 ## Características
 
-- **Descargas**: cola con concurrencia, pausa/reanudación reales del proceso, cancelar, reintentar,
-  varias URLs a la vez, arrastrar y soltar, importar lista `.txt`, vigilar el portapapeles (opcional).
+- **Descargas**: cola con concurrencia, pausa real del proceso, cancelar, reintentar, reordenar
+  (▲ ▼ Primero) y cola persistente entre sesiones.
 - **Buscador** integrado (YouTube y SoundCloud) con miniaturas.
-- **Visor de metadatos**: miniatura, autor, duración, fecha, visitas, capítulos, descripción y
-  calidades disponibles. Incluye **vista previa** reproducible dentro de la app.
-- **Pistas de audio**: elige una o varias (varias → `.mkv` con todas las pistas).
-- **Subtítulos**: archivos `.srt`, incrustados, o solo subtítulos; manuales y automáticos.
-- Metadatos y carátula incrustados, límite de velocidad, proxy, cookies del navegador,
-  plantillas de nombre de archivo, actualización de yt-dlp desde Ajustes.
-- **Cola persistente**: lo que no terminó al cerrar reaparece como «pendiente» y se reanuda con un clic.
-- **Playlists**: aviso al pegar una playlist y selección de elementos concretos.
-- **Diagnóstico**: «Comprobar instalación» (entorno + yt-dlp verbose + descarga real mínima), copiar el detalle de un error, visor del registro, instancia única.
-- **Estado visible**: cada descarga muestra qué está haciendo (obteniendo información, uniendo, extrayendo audio…).
-- **Menú y atajos**: Ctrl+O importar lista, Ctrl+Shift+V pegar y añadir, Ctrl+P pausar todo,
-  Ctrl+R reanudar todo, Ctrl+L quitar terminadas, Ctrl+1…4 pestañas, Ctrl+F buscar, F1 «Acerca de».
-- **Barra de estado** con la velocidad total, aviso de poco espacio en disco y memoria del
-  tamaño de ventana y de la última pestaña.
-- **Acerca de**: versión, sección sobre el autor con web y GitHub, componentes instalados (yt-dlp, FFmpeg, JavaScript…), créditos
-  y aviso legal, con botón para copiar la información al reportar un problema.
-- **Historial** con filtro, reproducir con el reproductor del sistema, abrir carpeta, descargar de nuevo.
+- **Visor de metadatos** con vista previa, pistas de audio, subtítulos, selección de elementos de
+  playlist y **recorte** por rango de tiempo o por capítulos.
+- **Perfiles**: «Música · MP3», «Vídeo 1080p», «Solo subtítulos»… y los tuyos.
+- **SponsorBlock** (marcar o eliminar patrocinios), **archivo de descargas** (no repetir vídeos),
+  política de archivos existentes, cookies desde navegador o `cookies.txt`, proxy y límite de velocidad.
+- **Se instala solo lo que necesita**: yt-dlp, FFmpeg y Deno se descargan desde la propia app.
+- Reintento automático con otro formato, estado visible de cada descarga, progreso global.
+- Notificaciones del sistema, menú con atajos, instancia única (pasa las URLs a la ventana abierta).
+- **Diagnóstico**: «Comprobar instalación», registro, y «Copiar detalle» en cada error.
 
-## Logo
+## Instalación
 
-Copia tu `Logo.png` en `assets/Logo.png` (o junto a `main.py`). Se usa en la cabecera y como
-icono de la ventana. Sin él, la app funciona igual y solo muestra el texto.
+### Ejecutable (sin Python)
 
-## Requisitos
+Descarga el paquete de tu sistema desde *Releases* y ábrelo:
 
-- Python 3.10+
-- **Deno** (recomendado) o Node 20+ (se ignora Node más antiguo): desde noviembre de 2025 yt-dlp lo necesita para YouTube
-  (junto con el componente `yt-dlp-ejs`, que instala `yt-dlp[default]`). Sin él faltan formatos
-  o aparece «video not available». La app lo detecta y avisa en la barra de estado.
-- [FFmpeg](https://ffmpeg.org/) en el PATH (opcional; necesario para audio, unión de vídeo+audio,
-  conversión/incrustado de subtítulos y metadatos)
+| Sistema | Paquete | Arranque |
+|---------|---------|----------|
+| Windows | `FireDownload-1.0.0-windows-x64.zip` | `FireDownload\FireDownload.exe` |
+| Linux   | `FireDownload-1.0.0-linux-x64.tar.gz` | `./FireDownload/FireDownload` o `./install.sh` |
+| macOS   | `FireDownload-1.0.0-macos-<arq>.zip` | `FireDownload.app` |
 
-## Instalación y uso
+La primera vez, la app ofrece instalar **yt-dlp, FFmpeg y Deno** (Ajustes → Gestionar herramientas).
+
+### Desde el código
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-python main.py                   # o: python -m firedownload
+python main.py                   # o: python -m firedownload  /  firedownload (tras pip install .)
 ```
+
+Requiere Python 3.10+. Puedes pasar URLs como argumentos: `python main.py https://…`.
+
+## Herramientas externas
+
+| Herramienta | Para qué | Instalación desde la app |
+|-------------|----------|--------------------------|
+| yt-dlp | descargar | binario oficial de GitHub, verificado con `SHA2-256SUMS` |
+| FFmpeg | unir vídeo+audio, MP3, subtítulos, SponsorBlock, recortes | builds de BtbN (Windows y Linux; en macOS: `brew install ffmpeg`) |
+| Deno | exigido por YouTube desde yt-dlp 2025.11.12 | release oficial de Deno |
+
+Se guardan en la carpeta de datos (`bin/`) y cada descarga se **verifica por SHA-256**; si el hash no
+coincide o no existe, no se instala nada. También se detectan las que ya tengas en el sistema, o
+en una carpeta `tools/` junto al ejecutable (modo portable).
+
+## Compilar un ejecutable
+
+```bash
+pip install -r requirements-dev.txt pyinstaller pillow
+python build_exe.py                 # carpeta + .zip/.tar.gz en dist/
+python build_exe.py --onefile       # un único ejecutable
+python build_exe.py --with-tools    # incluye yt-dlp, FFmpeg y Deno en tools/ (portable)
+python build_exe.py --dry-run       # muestra el plan sin compilar
+```
+
+`build_exe.py` detecta el sistema donde se ejecuta (PyInstaller no compila de forma cruzada):
+Windows genera `dist/FireDownload/FireDownload.exe`, Linux una carpeta con el binario, un `.desktop`
+y un `install.sh`, y macOS un `FireDownload.app`. En GitHub, el flujo `release.yml` lo hace en los
+tres sistemas al publicar una etiqueta `v*`. En Linux se necesitan las librerías de Qt (`libxcb-cursor0`).
+
+> Con `--with-tools` el paquete incluye FFmpeg (GPL): si lo publicas, cumple sus condiciones de licencia.
 
 ## Datos de usuario
 
@@ -59,19 +80,12 @@ python main.py                   # o: python -m firedownload
 | Windows | `%APPDATA%\FireDownload\`                     |
 | macOS   | `~/Library/Application Support/FireDownload/` |
 
-Contiene `config.json`, `history.json`, `logs/app.log` y `cache/` (miniaturas).
+Contiene `config.json`, `history.json`, `queue.json`, `archive.txt`, `bin/`, `cache/` y `logs/`.
 
-## Estructura
+## Logo
 
-```
-main.py, build_zip.py, requirements.txt, assets/Logo.png
-firedownload/
-  app.py  config.py
-  core/  utils  ytdlp  info  tasks  thumbs  sounds  history  queue_store  worker  manager
-  ui/    theme  main_window  about_dialog  check_dialog  download_tab  search_tab  info_dialog  preview_dialog
-         history_tab  settings_tab  log_dialog
-tests/                   pytest (args, info, config, worker, manager, ui)
-```
+Copia tu `Logo.png` a `assets/Logo.png`: se usa en la cabecera, el icono de la ventana,
+«Acerca de» y el icono del ejecutable (con Pillow).
 
 ## Pruebas
 
@@ -80,12 +94,19 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-Usan un yt-dlp falso (`tests/fake_ytdlp.py`) y Qt en modo offscreen; no necesitan red.
+Usan un yt-dlp falso y Qt en modo offscreen, y un servidor HTTP local para el instalador.
 
-## Generar el .zip
+## Estructura
 
-```bash
-python build_zip.py
+```
+main.py  build_exe.py  build_zip.py  pyproject.toml  LICENSE
+firedownload/
+  app.py  config.py
+  core/  utils ytdlp info tools tasks thumbs sounds notify profiles history queue_store
+         single_instance worker manager
+  ui/    theme main_window download_tab search_tab info_dialog tools_dialog about_dialog
+         check_dialog log_dialog history_tab settings_tab preview_dialog
+tests/   .github/workflows/ (ci, release)
 ```
 
 ## Autor y enlaces
@@ -93,6 +114,11 @@ python build_zip.py
 Creado por **Dragoland** · [bitcriollo.pages.dev](https://bitcriollo.pages.dev) ·
 [github.com/Dragoland/firedownload](https://github.com/Dragoland/firedownload)
 
-Los datos de «Acerca de» salen de `firedownload/__init__.py` (`__author__`, `__contact__`,
-`__github__`, `__site_web__`, `__copyright__`); el texto de la sección «Sobre el autor» está
-en `firedownload/ui/about_dialog.py`.
+Los datos de «Acerca de» salen de `firedownload/__init__.py`; el texto de «Sobre el autor» está en
+`firedownload/ui/about_dialog.py`.
+
+## Licencia
+
+[MIT](LICENSE) © 2026 Dragoland. Usa yt-dlp (Unlicense), PySide6/Qt (LGPLv3) y psutil (BSD-3);
+FFmpeg y Deno son proyectos independientes. Descarga solo contenido sobre el que tengas derechos
+o permiso y respeta los términos de cada plataforma.

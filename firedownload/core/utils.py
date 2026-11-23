@@ -10,6 +10,7 @@ import re
 import shutil
 import subprocess
 import sys
+from datetime import date, datetime
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -27,13 +28,52 @@ def validate_url(url: str) -> bool:
     return parsed.scheme in ("http", "https") and "." in (parsed.hostname or "")
 
 
+def portable_tools_dir() -> Path:
+    """Carpeta `tools/` junto al ejecutable (o a la raíz del proyecto en desarrollo)."""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent / "tools"
+    return Path(__file__).resolve().parents[2] / "tools"
+
+
+def tool_dirs() -> list[Path]:
+    """Carpetas donde se buscan las herramientas instaladas por la app."""
+    from firedownload.config import Paths  # import tardío: config importa este módulo
+
+    return [Paths.BIN, portable_tools_dir()]
+
+
+def find_tool(name: str) -> Path | None:
+    """Ejecutable de una herramienta instalada por la app (o portable), si existe."""
+    suffix = ".exe" if sys.platform == "win32" else ""
+    for folder in tool_dirs():
+        candidate = folder / f"{name}{suffix}"
+        if candidate.is_file():
+            return candidate
+    return None
+
+
 @lru_cache(maxsize=1)
 def find_ytdlp() -> tuple[str, ...] | None:
-    """Comando base para lanzar yt-dlp, o None si no está disponible."""
+    """Comando base para lanzar yt-dlp: binario de la app, módulo de Python o PATH."""
+    managed = find_tool("yt-dlp")
+    if managed:
+        return (str(managed),)
     if not getattr(sys, "frozen", False) and importlib.util.find_spec("yt_dlp"):
         return (sys.executable, "-m", "yt_dlp")
     exe = shutil.which("yt-dlp")
     return (exe,) if exe else None
+
+
+def find_ffmpeg() -> str | None:
+    """Ruta de ffmpeg: la instalada por la app o la del PATH."""
+    managed = find_tool("ffmpeg")
+    return str(managed) if managed else shutil.which("ffmpeg")
+
+
+def refresh_tools() -> None:
+    """Olvida las rutas en caché tras instalar o actualizar herramientas."""
+    find_ytdlp.cache_clear()
+    find_js_runtime.cache_clear()
 
 
 _JS_RUNTIMES: tuple[tuple[str, str], ...] = (("deno", "deno"), ("node", "node"), ("quickjs", "qjs"))
@@ -51,6 +91,9 @@ def _node_is_recent(path: str) -> bool:
 @lru_cache(maxsize=1)
 def find_js_runtime() -> tuple[str, str] | None:
     """Runtime de JavaScript que yt-dlp necesita para YouTube: (nombre, ruta) o None."""
+    managed = find_tool("deno")
+    if managed:
+        return "deno", str(managed)
     for name, executable in _JS_RUNTIMES:
         found = shutil.which(executable)
         if not found and name == "deno":
@@ -81,8 +124,30 @@ def read_tail(path: Path, lines: int = 300) -> str:
 
 
 def check_ffmpeg() -> bool:
-    """True si ffmpeg está en el PATH."""
-    return shutil.which("ffmpeg") is not None
+    """True si hay un ffmpeg utilizable."""
+    return find_ffmpeg() is not None
+
+
+def ytdlp_is_outdated(version: str, *, today: date | None = None, days: int = 60) -> bool:
+    """yt-dlp usa versiones tipo «2025.11.12»; True si tiene más de `days` días."""
+    try:
+        released = datetime.strptime(version.strip()[:10], "%Y.%m.%d").date()
+    except ValueError:
+        return False
+    return ((today or date.today()) - released).days > days
+
+
+def parse_timestamp(text: str) -> float | None:
+    """«1:02:03», «2:30» o «45» → segundos; None si está vacío; ValueError si no es válido."""
+    text = text.strip()
+    if not text:
+        return None
+    seconds = 0.0
+    for part in text.split(":"):
+        seconds = seconds * 60 + float(part)
+    if seconds < 0:
+        raise ValueError(text)
+    return seconds
 
 
 def open_in_file_manager(path: Path) -> bool:

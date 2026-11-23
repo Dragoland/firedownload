@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMessageBox,
@@ -24,11 +25,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from firedownload.config import AUDIO_FORMATS, QUALITIES, SUBS_MODES, VIDEO_FORMATS, Settings
+from firedownload.config import AUDIO_FORMATS, QUALITIES, SPONSORBLOCK_MODES, SUBS_MODES, VIDEO_FORMATS, Settings
 from firedownload.core.info import MediaInfo, compress_ranges, info_args, parse_info, stream_args
 from firedownload.core.tasks import YtdlpTask
 from firedownload.core.thumbs import ThumbnailLoader, cover
-from firedownload.core.utils import check_ffmpeg, format_count, format_date, format_duration
+from firedownload.core.utils import check_ffmpeg, format_count, format_date, format_duration, parse_timestamp
 from firedownload.core.ytdlp import ytdlp_command
 
 try:
@@ -152,10 +153,16 @@ class InfoDialog(QDialog):
         self._embed_thumbnail.setChecked(s.embed_thumbnail)
         self._playlist = QCheckBox("Descargar la playlist completa")
         self._playlist.setChecked(s.download_playlist)
+        self._sponsorblock = QComboBox()
+        for key, label in SPONSORBLOCK_MODES.items():
+            self._sponsorblock.addItem(label, key)
+        self._sponsorblock.setCurrentIndex(max(self._sponsorblock.findData(s.sponsorblock), 0))
         extras_tab = QWidget()
         extras = QVBoxLayout(extras_tab)
         for box in (self._embed_metadata, self._embed_thumbnail, self._playlist):
             extras.addWidget(box)
+        extras.addWidget(QLabel("SponsorBlock (requiere FFmpeg)"))
+        extras.addWidget(self._sponsorblock)
         extras.addStretch(1)
 
         self._items_list = QListWidget()
@@ -172,12 +179,31 @@ class InfoDialog(QDialog):
         items_layout.addLayout(items_buttons)
         items_layout.addWidget(self._items_list, 1)
 
+        self._cut_start = QLineEdit()
+        self._cut_start.setPlaceholderText("Inicio (p. ej. 1:30)")
+        self._cut_end = QLineEdit()
+        self._cut_end.setPlaceholderText("Fin (p. ej. 2:45; vacío = hasta el final)")
+        self._chapter_list = QListWidget()
+        cut_hint = QLabel("Descarga solo un fragmento. Requiere FFmpeg. Puedes combinar un rango con capítulos.")
+        cut_hint.setObjectName("muted")
+        cut_hint.setWordWrap(True)
+        cut_tab = QWidget()
+        cut_layout = QVBoxLayout(cut_tab)
+        cut_layout.addWidget(cut_hint)
+        cut_range = QHBoxLayout()
+        cut_range.addWidget(self._cut_start)
+        cut_range.addWidget(self._cut_end)
+        cut_layout.addLayout(cut_range)
+        cut_layout.addWidget(QLabel("Capítulos"))
+        cut_layout.addWidget(self._chapter_list, 1)
+
         self._tabs = QTabWidget()
         self._tabs.addTab(format_tab, "Formato")
         self._tabs.addTab(audio_tab, "Pistas de audio")
         self._tabs.addTab(subs_tab, "Subtítulos")
         self._tabs.addTab(extras_tab, "Extras")
         self._tabs.addTab(items_tab, "Elementos")
+        self._tabs.addTab(cut_tab, "Recorte")
         self._tabs.setTabEnabled(4, False)
         self._tabs.setEnabled(False)
 
@@ -250,6 +276,7 @@ class InfoDialog(QDialog):
         self._fill_subs(info)
         if info.is_playlist:
             self._fill_items(info)
+        self._fill_chapters(info)
         self._tabs.setEnabled(True)
         self._download.setEnabled(True)
         self._preview.setEnabled(not info.is_playlist)
@@ -294,6 +321,31 @@ class InfoDialog(QDialog):
         self._subs_mode.setEnabled(has_subs)
         self._tabs.setTabEnabled(2, not info.is_playlist)
 
+    def _fill_chapters(self, info: MediaInfo) -> None:
+        self._chapter_list.clear()
+        for start, end, title in info.chapter_list:
+            item = QListWidgetItem(f"{format_duration(start) or '0:00'} – {format_duration(end)}  {title}")
+            item.setData(Qt.ItemDataRole.UserRole, (start, end))
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Unchecked)
+            self._chapter_list.addItem(item)
+        self._chapter_list.setEnabled(bool(info.chapter_list))
+        self._tabs.setTabEnabled(5, not info.is_playlist)
+
+    @staticmethod
+    def _seconds(value: float) -> str:
+        return f"{value:.3f}".rstrip("0").rstrip(".")
+
+    def _sections(self) -> list[str]:
+        """Rangos «*inicio-fin» (en segundos) según el recorte manual y los capítulos marcados."""
+        sections: list[str] = []
+        start, end = parse_timestamp(self._cut_start.text()), parse_timestamp(self._cut_end.text())
+        if start is not None or end is not None:
+            sections.append(f"*{self._seconds(start or 0)}-{'inf' if end is None else self._seconds(end)}")
+        for chapter_start, chapter_end in self._checked(self._chapter_list):
+            sections.append(f"*{self._seconds(chapter_start)}-{self._seconds(chapter_end)}")
+        return sections
+
     def _fill_items(self, info: MediaInfo) -> None:
         self._items_list.clear()
         for position, title in info.playlist_entries:
@@ -312,6 +364,14 @@ class InfoDialog(QDialog):
             self._items_list.item(i).setCheckState(state)
 
     def _on_download(self) -> None:
+        try:
+            start, end = parse_timestamp(self._cut_start.text()), parse_timestamp(self._cut_end.text())
+        except ValueError:
+            QMessageBox.warning(self, "Recorte no válido", "Escribe los tiempos como 90, 1:30 o 1:02:03.")
+            return
+        if start is not None and end is not None and end <= start:
+            QMessageBox.warning(self, "Recorte no válido", "El fin debe ser posterior al inicio.")
+            return
         if self.info is not None and self.info.is_playlist and not self._checked(self._items_list):
             QMessageBox.warning(self, "Sin elementos", "Marca al menos un elemento de la playlist.")
             return
@@ -335,6 +395,7 @@ class InfoDialog(QDialog):
             embed_metadata=self._embed_metadata.isChecked(),
             embed_thumbnail=self._embed_thumbnail.isChecked(),
             download_playlist=self._playlist.isChecked(),
+            sponsorblock=self._sponsorblock.currentData(),
         )
         if self.info is not None and self.info.is_playlist:
             picked_items = self._checked(self._items_list)
@@ -342,6 +403,12 @@ class InfoDialog(QDialog):
             if len(picked_items) < self._items_list.count():
                 o["playlist_items"] = compress_ranges(picked_items)
         if self.info is not None and not self.info.is_playlist:
+            try:
+                sections = self._sections()
+            except ValueError:
+                sections = []
+            if sections:
+                o["sections"] = sections
             o["audio_langs"] = self._checked(self._audio_list) if self._audio_list.isEnabled() else []
             picked = self._checked(self._subs_list)
             o["subs_mode"] = self._subs_mode.currentData() if picked else "none"

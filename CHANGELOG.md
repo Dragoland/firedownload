@@ -4,11 +4,23 @@
 
 Primera versión pública.
 
-- Descargas con yt-dlp: cola, concurrencia, pausa real del proceso, cancelar, reintentar y cola persistente entre sesiones.
-- Buscador integrado (YouTube y SoundCloud) con miniaturas.
-- Visor de metadatos con vista previa, pistas de audio, subtítulos y selección de elementos de playlist.
-- Soporte del runtime de JavaScript que exige YouTube (Deno / Node 20+) y modo sin FFmpeg.
-- Progreso global entre pistas y elementos, estado visible de cada descarga y detalle copiable de errores.
-- Historial con filtro, menú con atajos, velocidad total y memoria del tamaño de ventana.
-- Diálogo «Acerca de» con sección sobre el autor, y comprobación de la instalación.
-- Tema oscuro con acento azul Arch y soporte para `Logo.png`.
+**Descargas**
+- Cola con concurrencia, pausa real del proceso, cancelar, reintentar, reordenar y cola persistente.
+- Progreso global entre pistas y elementos; estado visible de cada descarga; detalle copiable de errores.
+- Reintento automático con otro formato cuando el pedido no está disponible.
+- Archivo de descargas, política de archivos existentes, límite de velocidad, proxy, cookies (navegador o `cookies.txt`).
+- SponsorBlock, recorte por rango o capítulos, selección de elementos de playlist, perfiles.
+
+**Búsqueda y metadatos**
+- Buscador (YouTube, SoundCloud) con miniaturas; visor de metadatos con vista previa,
+  pistas de audio y subtítulos.
+
+**Distribución**
+- Gestor de herramientas dentro de la app: instala yt-dlp, FFmpeg y Deno con verificación SHA-256.
+- `build_exe.py`: compila para el sistema actual (Windows, Linux o macOS) y empaqueta.
+- Flujos de GitHub Actions para pruebas y publicación de binarios.
+
+**Interfaz**
+- Tema oscuro con acento azul Arch, menú con atajos, notificaciones, instancia única,
+  «Acerca de» con sección del autor, comprobación de instalación y registro.
+- Licencia MIT.

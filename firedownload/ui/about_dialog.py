@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import platform
-import shutil
 import sys
 from pathlib import Path
 
@@ -24,7 +23,7 @@ from PySide6.QtWidgets import (
 from firedownload import __author__, __contact__, __copyright__, __github__, __site_web__, __version__
 from firedownload.config import Paths, Settings
 from firedownload.core.tasks import YtdlpTask
-from firedownload.core.utils import external_url, find_js_runtime, find_logo, open_in_file_manager
+from firedownload.core.utils import external_url, find_ffmpeg, find_js_runtime, find_logo, open_in_file_manager
 from firedownload.core.ytdlp import ytdlp_command
 from firedownload.ui.check_dialog import CheckDialog
 
@@ -32,7 +31,8 @@ _CREDITS = (
     'Construido sobre <a href="https://github.com/yt-dlp/yt-dlp">yt-dlp</a> (Unlicense), '
     '<a href="https://doc.qt.io/qtforpython-6/">PySide6 / Qt</a> (LGPLv3) y '
     '<a href="https://github.com/giampaolo/psutil">psutil</a> (BSD-3). '
-    '<a href="https://ffmpeg.org">FFmpeg</a> es un proyecto independiente que se usa si está instalado.'
+    '<a href="https://ffmpeg.org">FFmpeg</a> y <a href="https://deno.com">Deno</a> son proyectos independientes que la app puede instalar a petición tuya. '
+    'FireDownload se distribuye bajo licencia MIT.'
 )
 _LEGAL = (
     "Descarga únicamente contenido sobre el que tengas derechos o permiso. "
@@ -114,7 +114,7 @@ class AboutDialog(QDialog):
         layout.addLayout(buttons)
 
         self._start_probe(ytdlp_command(["--version"]), self._on_ytdlp, self._on_ytdlp_failed, "yt-dlp")
-        ffmpeg = shutil.which("ffmpeg")
+        ffmpeg = find_ffmpeg()
         if ffmpeg:
             self._start_probe([ffmpeg, "-version"], self._on_ffmpeg, self._on_ffmpeg_failed, "FFmpeg")
 
@@ -127,7 +127,7 @@ class AboutDialog(QDialog):
             "Qt": f"PySide6 · Qt {qVersion()}",
             "Sistema": platform.platform(),
             "yt-dlp": "comprobando…",
-            "FFmpeg": "comprobando…" if shutil.which("ffmpeg") else "no encontrado",
+            "FFmpeg": "comprobando…" if find_ffmpeg() else "no encontrado",
             "JavaScript": f"{runtime[0]} ({runtime[1]})" if runtime else "no encontrado (YouTube necesita Deno o Node 20+)",
             "Datos": str(Paths.BASE),
         }
@@ -179,7 +179,7 @@ class AboutDialog(QDialog):
 
     def _copyright_label(self) -> QLabel:
         return _rich(
-            f'{__copyright__} · Creado por {__author__} · '
+            f'{__copyright__} · Licencia MIT · Creado por {__author__} · '
             f'<a href="{external_url(__github__)}">{__github__}</a>'
         )
 

@@ -1,4 +1,4 @@
-"""Pestaña de ajustes: general, red, valores por defecto de subtítulos/metadatos y yt-dlp."""
+"""Pestaña de ajustes: general, red, valores por defecto, herramientas y diagnóstico."""
 
 from __future__ import annotations
 
@@ -27,16 +27,18 @@ from firedownload.config import (
     FILENAME_TEMPLATES,
     MAX_CONCURRENT_LIMIT,
     MAX_RETRIES_LIMIT,
+    OVERWRITE_MODES,
+    SPONSORBLOCK_MODES,
     SUBS_MODES,
+    Paths,
     Settings,
     is_valid_proxy,
     is_valid_speed,
     lang_list,
 )
-from firedownload.config import Paths
 from firedownload.core.tasks import YtdlpTask
 from firedownload.core.utils import find_js_runtime, open_in_file_manager
-from firedownload.core.ytdlp import update_command, ytdlp_command
+from firedownload.core.ytdlp import ytdlp_command
 from firedownload.ui.check_dialog import CheckDialog
 from firedownload.ui.log_dialog import LogDialog
 
@@ -45,11 +47,11 @@ class SettingsTab(QWidget):
     """Edita y guarda los ajustes generales."""
 
     settings_saved = Signal()
+    tools_requested = Signal()
 
     def __init__(self, settings: Settings, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._settings = settings
-        self._task: YtdlpTask | None = None
 
         self._path = QLineEdit(settings.download_path)
         browse = QPushButton("Examinar…")
@@ -59,7 +61,13 @@ class SettingsTab(QWidget):
         self._retries.setRange(0, MAX_RETRIES_LIMIT)
         self._template = QComboBox()
         self._template.addItems(FILENAME_TEMPLATES)
+        self._overwrite = QComboBox()
+        for key, label in OVERWRITE_MODES.items():
+            self._overwrite.addItem(label, key)
+        self._archive = QCheckBox("Evitar descargar dos veces el mismo vídeo (archivo de descargas)")
+        clear_archive = QPushButton("Borrar archivo…")
         self._sounds = QCheckBox("Sonido al completar o fallar una descarga")
+        self._notifications = QCheckBox("Notificación del sistema al terminar (si la ventana no está activa)")
         self._clipboard = QCheckBox("Rellenar la URL automáticamente al copiar un enlace")
 
         self._speed = QLineEdit()
@@ -70,6 +78,10 @@ class SettingsTab(QWidget):
         self._cookies.addItem("Ninguno", "")
         for browser in COOKIE_BROWSERS:
             self._cookies.addItem(browser.capitalize(), browser)
+        self._cookies_file = QLineEdit()
+        self._cookies_file.setPlaceholderText("cookies.txt (formato Netscape; tiene prioridad sobre el navegador)")
+        cookies_browse = QPushButton("Examinar…")
+        self._remote = QCheckBox("Permitir que yt-dlp descargue su componente de YouTube desde GitHub (solo si falta)")
 
         self._audio_langs = QLineEdit()
         self._audio_langs.setPlaceholderText("p. ej. es,en (vacío = pista por defecto)")
@@ -81,14 +93,23 @@ class SettingsTab(QWidget):
         self._subs_auto = QCheckBox("Permitir subtítulos generados automáticamente")
         self._embed_metadata = QCheckBox("Incrustar metadatos")
         self._embed_thumbnail = QCheckBox("Incrustar miniatura como carátula")
+        self._sponsorblock = QComboBox()
+        for key, label in SPONSORBLOCK_MODES.items():
+            self._sponsorblock.addItem(label, key)
 
         self._version = QLabel("yt-dlp: …")
         self._version.setObjectName("muted")
-        self._update = QPushButton("Actualizar yt-dlp")
+        tools_button = QPushButton("Gestionar herramientas…")
 
         path_row = QHBoxLayout()
         path_row.addWidget(self._path, 1)
         path_row.addWidget(browse)
+        cookies_row = QHBoxLayout()
+        cookies_row.addWidget(self._cookies_file, 1)
+        cookies_row.addWidget(cookies_browse)
+        archive_row = QHBoxLayout()
+        archive_row.addWidget(self._archive, 1)
+        archive_row.addWidget(clear_archive)
 
         general = QGroupBox("General")
         form = QFormLayout(general)
@@ -96,14 +117,19 @@ class SettingsTab(QWidget):
         form.addRow("Descargas simultáneas", self._concurrent)
         form.addRow("Reintentos", self._retries)
         form.addRow("Nombre de archivo", self._template)
+        form.addRow("Si el archivo ya existe", self._overwrite)
+        form.addRow("", archive_row)
         form.addRow("", self._sounds)
+        form.addRow("", self._notifications)
         form.addRow("", self._clipboard)
 
-        network = QGroupBox("Red")
+        network = QGroupBox("Red y cuentas")
         net_form = QFormLayout(network)
         net_form.addRow("Límite de velocidad", self._speed)
         net_form.addRow("Proxy", self._proxy)
         net_form.addRow("Cookies del navegador", self._cookies)
+        net_form.addRow("Archivo de cookies", cookies_row)
+        net_form.addRow("", self._remote)
 
         defaults = QGroupBox("Valores por defecto")
         def_form = QFormLayout(defaults)
@@ -113,34 +139,31 @@ class SettingsTab(QWidget):
         def_form.addRow("", self._subs_auto)
         def_form.addRow("", self._embed_metadata)
         def_form.addRow("", self._embed_thumbnail)
+        def_form.addRow("SponsorBlock", self._sponsorblock)
 
-        engine = QGroupBox("yt-dlp")
-        engine_row = QHBoxLayout(engine)
+        engine = QGroupBox("Herramientas")
+        engine_layout = QVBoxLayout(engine)
+        engine_row = QHBoxLayout()
         engine_row.addWidget(self._version, 1)
-        engine_row.addWidget(self._update)
-
+        engine_row.addWidget(tools_button)
+        engine_layout.addLayout(engine_row)
         runtime = find_js_runtime()
         js_label = QLabel(
             f"JavaScript: {runtime[0]} ({runtime[1]})" if runtime
-            else "JavaScript: no encontrado. YouTube necesita Deno (o Node 20+) instalado."
+            else "JavaScript: no encontrado. YouTube necesita Deno (o Node 20+); instálalo desde «Gestionar herramientas»."
         )
         js_label.setObjectName("muted" if runtime else "warning")
         js_label.setWordWrap(True)
+        engine_layout.addWidget(js_label)
+
         check_button = QPushButton("Comprobar instalación…")
         log_button = QPushButton("Ver registro…")
         data_button = QPushButton("Abrir carpeta de datos")
         diagnostics = QGroupBox("Diagnóstico")
-        diag_layout = QVBoxLayout(diagnostics)
-        diag_layout.addWidget(js_label)
-        diag_buttons = QHBoxLayout()
-        diag_buttons.addWidget(check_button)
-        diag_buttons.addWidget(log_button)
-        diag_buttons.addWidget(data_button)
+        diag_buttons = QHBoxLayout(diagnostics)
+        for button in (check_button, log_button, data_button):
+            diag_buttons.addWidget(button)
         diag_buttons.addStretch(1)
-        diag_layout.addLayout(diag_buttons)
-        check_button.clicked.connect(lambda: CheckDialog(self._settings, self).exec())
-        log_button.clicked.connect(lambda: LogDialog(self).exec())
-        data_button.clicked.connect(lambda: open_in_file_manager(Paths.BASE))
 
         save = QPushButton("Guardar")
         save.setObjectName("primary")
@@ -166,10 +189,15 @@ class SettingsTab(QWidget):
         layout.addLayout(footer)
 
         browse.clicked.connect(self._browse)
+        cookies_browse.clicked.connect(self._browse_cookies)
+        clear_archive.clicked.connect(self._clear_archive)
         save.clicked.connect(self._save)
-        self._update.clicked.connect(self._update_ytdlp)
+        tools_button.clicked.connect(self.tools_requested)
+        check_button.clicked.connect(lambda: CheckDialog(self._settings, self).exec())
+        log_button.clicked.connect(lambda: LogDialog(self).exec())
+        data_button.clicked.connect(lambda: open_in_file_manager(Paths.BASE))
         self._load_values()
-        self._refresh_version()
+        self.refresh_version()
 
     def _load_values(self) -> None:
         s = self._settings
@@ -177,22 +205,42 @@ class SettingsTab(QWidget):
         self._concurrent.setValue(s.max_concurrent)
         self._retries.setValue(s.retries)
         self._template.setCurrentText(s.filename_template)
+        self._overwrite.setCurrentIndex(max(self._overwrite.findData(s.overwrite), 0))
+        self._archive.setChecked(s.use_archive)
         self._sounds.setChecked(s.enable_sounds)
+        self._notifications.setChecked(s.notifications)
         self._clipboard.setChecked(s.monitor_clipboard)
         self._speed.setText(s.speed_limit)
         self._proxy.setText(s.proxy)
         self._cookies.setCurrentIndex(max(self._cookies.findData(s.cookies_browser), 0))
+        self._cookies_file.setText(s.cookies_file)
+        self._remote.setChecked(s.allow_remote_components)
         self._audio_langs.setText(",".join(s.audio_langs))
         self._subs_mode.setCurrentIndex(max(self._subs_mode.findData(s.subs_mode), 0))
         self._subs_langs.setText(",".join(s.subs_langs))
         self._subs_auto.setChecked(s.subs_auto)
         self._embed_metadata.setChecked(s.embed_metadata)
         self._embed_thumbnail.setChecked(s.embed_thumbnail)
+        self._sponsorblock.setCurrentIndex(max(self._sponsorblock.findData(s.sponsorblock), 0))
 
     def _browse(self) -> None:
         folder = QFileDialog.getExistingDirectory(self, "Carpeta de descargas", self._path.text())
         if folder:
             self._path.setText(folder)
+
+    def _browse_cookies(self) -> None:
+        filename, _ = QFileDialog.getOpenFileName(self, "Archivo de cookies", self._cookies_file.text(), "Texto (*.txt);;Todos (*)")
+        if filename:
+            self._cookies_file.setText(filename)
+
+    def _clear_archive(self) -> None:
+        answer = QMessageBox.question(
+            self,
+            "Borrar archivo de descargas",
+            "Se olvidará qué vídeos ya descargaste y podrán descargarse de nuevo. ¿Continuar?",
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            Paths.ARCHIVE_FILE.unlink(missing_ok=True)
 
     def _save(self) -> None:
         raw = self._path.text().strip()
@@ -206,6 +254,10 @@ class SettingsTab(QWidget):
         if not is_valid_proxy(proxy):
             QMessageBox.warning(self, "Proxy no válido", "Formato esperado: http://host:puerto o socks5://host:puerto.")
             return
+        cookies_file = self._cookies_file.text().strip()
+        if cookies_file and not Path(cookies_file).is_file():
+            QMessageBox.warning(self, "Cookies no válidas", "El archivo de cookies indicado no existe.")
+            return
         folder = Path(raw).expanduser()
         try:
             folder.mkdir(parents=True, exist_ok=True)
@@ -218,17 +270,23 @@ class SettingsTab(QWidget):
         s.max_concurrent = self._concurrent.value()
         s.retries = self._retries.value()
         s.filename_template = self._template.currentText()
+        s.overwrite = self._overwrite.currentData()
+        s.use_archive = self._archive.isChecked()
         s.enable_sounds = self._sounds.isChecked()
+        s.notifications = self._notifications.isChecked()
         s.monitor_clipboard = self._clipboard.isChecked()
         s.speed_limit = speed
         s.proxy = proxy
         s.cookies_browser = self._cookies.currentData()
+        s.cookies_file = cookies_file
+        s.allow_remote_components = self._remote.isChecked()
         s.audio_langs = lang_list(self._audio_langs.text())
         s.subs_mode = self._subs_mode.currentData()
         s.subs_langs = lang_list(self._subs_langs.text())
         s.subs_auto = self._subs_auto.isChecked()
         s.embed_metadata = self._embed_metadata.isChecked()
         s.embed_thumbnail = self._embed_thumbnail.isChecked()
+        s.sponsorblock = self._sponsorblock.currentData()
         try:
             s.save()
         except OSError as exc:
@@ -237,11 +295,11 @@ class SettingsTab(QWidget):
         self._load_values()
         self.settings_saved.emit()
 
-    def _refresh_version(self) -> None:
+    def refresh_version(self) -> None:
+        """Vuelve a consultar la versión de yt-dlp (tras instalar o actualizar)."""
         command = ytdlp_command(["--version"])
         if command is None:
             self._version.setText("yt-dlp: no encontrado")
-            self._update.setEnabled(False)
             return
         task = YtdlpTask(command, 20)
         task.succeeded.connect(self._on_version)
@@ -253,22 +311,3 @@ class SettingsTab(QWidget):
 
     def _on_version_failed(self, _message: str) -> None:
         self._version.setText("yt-dlp: versión desconocida")
-
-    def _update_ytdlp(self) -> None:
-        command = update_command()
-        if command is None:
-            return
-        self._update.setEnabled(False)
-        self._version.setText("Actualizando yt-dlp…")
-        self._task = YtdlpTask(command, 300)
-        self._task.succeeded.connect(self._on_updated)
-        self._task.failed.connect(self._on_update_failed)
-        self._task.start()
-
-    def _on_updated(self, _output: str) -> None:
-        self._update.setEnabled(True)
-        self._refresh_version()
-
-    def _on_update_failed(self, message: str) -> None:
-        self._update.setEnabled(True)
-        self._version.setText(f"No se pudo actualizar: {message}")

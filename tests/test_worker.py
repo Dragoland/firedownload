@@ -134,3 +134,24 @@ def test_old_ytdlp_without_js_options_is_retried(fake_ytdlp, settings, wait, mon
     worker.wait()
     assert ev["done"][0][1] is True
     assert "--js-runtimes" not in worker.diagnostics()
+
+
+def test_archive_skip_counts_as_success_without_file(fake_ytdlp, settings, wait, monkeypatch):
+    monkeypatch.setenv("FAKE_YTDLP_ARCHIVE_SKIP", "1")
+    worker, ev = make_worker(settings, use_archive=True)
+    worker.start()
+    assert wait(lambda: ev["done"])
+    worker.wait()
+    _id, ok, message, path = ev["done"][0]
+    assert ok and path == "" and "archivo de descargas" in message
+
+
+def test_unavailable_format_is_retried_with_a_plain_selector(fake_ytdlp, settings, wait, monkeypatch):
+    monkeypatch.setenv("FAKE_YTDLP_NOFORMAT", "1")
+    worker, ev = make_worker(settings, quality="720p")
+    worker.start()
+    assert wait(lambda: ev["done"])
+    worker.wait()
+    assert ev["done"][0][1] is True
+    assert "Reintentando con otro formato…" in ev["phase"]
+    assert "height<=720" not in worker.diagnostics().split("Salida")[0]

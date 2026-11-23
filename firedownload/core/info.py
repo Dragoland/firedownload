@@ -33,6 +33,7 @@ class MediaInfo:
     subtitles: list[tuple[str, str]] = field(default_factory=list)
     auto_captions: list[tuple[str, str]] = field(default_factory=list)
     chapters: int = 0
+    chapter_list: list[tuple[float, float, str]] = field(default_factory=list)
 
 
 @dataclass
@@ -157,6 +158,9 @@ def parse_info(raw: str, url: str) -> MediaInfo:
     info.audio_tracks = sorted(tracks.items())
     info.subtitles = _caption_list(data.get("subtitles"))
     info.auto_captions = _caption_list(data.get("automatic_captions"))
+    for chapter in data.get("chapters") or []:
+        if isinstance(chapter, dict) and isinstance(chapter.get("start_time"), (int, float)) and isinstance(chapter.get("end_time"), (int, float)):
+            info.chapter_list.append((float(chapter["start_time"]), float(chapter["end_time"]), str(chapter.get("title") or "")))
     info.chapters = len(data.get("chapters") or [])
     return info
 

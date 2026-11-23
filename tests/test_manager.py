@@ -114,3 +114,31 @@ def test_pause_all_resume_all_and_total_speed(fake_ytdlp, settings, wait, monkey
     manager.resume_all()
     assert a.status is Status.DOWNLOADING and b.status is Status.DOWNLOADING
     manager.shutdown()
+
+
+def test_reorder_queue_and_prioritize(fake_ytdlp, settings, monkeypatch):
+    monkeypatch.setenv("FAKE_YTDLP_DELAY", "0.3")
+    settings.max_concurrent = 1
+    manager = DownloadManager(settings)
+    running = manager.add(URL)
+    a, b, c = (manager.add(URL + f"&n={i}") for i in range(3))
+    orders = []
+    manager.order_changed.connect(lambda: orders.append(1))
+    assert [i.id for i in manager.queue] == [a.id, b.id, c.id]
+    manager.move(c.id, -1)
+    assert [i.id for i in manager.queue] == [a.id, c.id, b.id]
+    assert list(manager.items) == [running.id, a.id, c.id, b.id], "items refleja el orden de la cola"
+    manager.prioritize(b.id)
+    assert [i.id for i in manager.queue] == [b.id, a.id, c.id]
+    manager.move(b.id, -5)
+    manager.move(running.id, 1)
+    assert [i.id for i in manager.queue] == [b.id, a.id, c.id] and orders
+    manager.shutdown()
+
+
+def test_archive_skip_completes_without_history(fake_ytdlp, settings, wait, monkeypatch):
+    monkeypatch.setenv("FAKE_YTDLP_ARCHIVE_SKIP", "1")
+    manager = DownloadManager(settings)
+    item = manager.add(URL, {**settings.download_options(), "use_archive": True})
+    assert wait(lambda: item.finished)
+    assert item.status is Status.COMPLETED and history.load() == []

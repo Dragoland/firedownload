@@ -20,6 +20,10 @@ if os.environ.get("FAKE_YTDLP_NO_JS") == "1" and "--js-runtimes" in args:
     sys.exit(2)
 
 if "--simulate" in args:
+    blocked = os.environ.get("FAKE_YTDLP_UNAVAILABLE")
+    if blocked and blocked in url:
+        out(f"ERROR: [youtube] {blocked}: This video is unavailable")
+        sys.exit(1)
     out("[debug] fake yt-dlp -v")
     out("[youtube] aaaaaaaaaaa: Downloading webpage")
     out("[info] aaaaaaaaaaa: Downloading 1 format(s): 18")
@@ -64,6 +68,10 @@ if "-J" in args:
 if os.environ.get("FAKE_YTDLP_EMPTY") == "1":
     sys.exit(0)
 
+if os.environ.get("FAKE_YTDLP_ARCHIVE_SKIP") == "1":
+    out("[download] aaaaaaaaaaa: has already been recorded in the archive")
+    sys.exit(0)
+
 template = args[args.index("-o") + 1]
 folder = os.path.dirname(template)
 os.makedirs(folder, exist_ok=True)
@@ -75,6 +83,9 @@ if "--skip-download" in args:
     sys.exit(0)
 
 selector = args[args.index("-f") + 1] if "-f" in args else ""
+if os.environ.get("FAKE_YTDLP_NOFORMAT") == "1" and ("-S" in args or "height<=" in selector):
+    out("ERROR: [youtube] aaaaaaaaaaa: Requested format is not available. Use --list-formats for a list of available formats")
+    sys.exit(1)
 two_streams = "-x" not in args and "+" in selector
 items = 2 if "--yes-playlist" in args and "playlist" in url else 1
 
@@ -95,4 +106,7 @@ for item in range(1, items + 1):
         out(f'[Merger] Merging formats into "{final}"')
     with open(final, "w", encoding="utf-8") as handle:
         handle.write("fake")
+    if "-x" in args and "--audio-format" in args:
+        with open(final[:-4] + ".mp3", "w", encoding="utf-8") as handle:
+            handle.write("fake")
 sys.exit(0)

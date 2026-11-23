@@ -10,9 +10,10 @@ from typing import Any
 
 from PySide6.QtCore import QObject, QThread, Signal
 
+from firedownload.core import tools
 from firedownload.core.ytdlp import humanize_error
 
-_ACTIVE: set[YtdlpTask] = set()
+_ACTIVE: set[QThread] = set()
 
 
 def _last_error(text: str) -> str:
@@ -83,6 +84,41 @@ class YtdlpTask(QThread):
             self.succeeded.emit(out)
         else:
             self.failed.emit(humanize_error(_last_error(err or out)))
+
+
+class ToolInstallTask(QThread):
+    """Instala una herramienta (yt-dlp, FFmpeg o Deno) en segundo plano."""
+
+    progress = Signal(int, int)
+    succeeded = Signal(str)
+    failed = Signal(str)
+
+    def __init__(self, spec: tools.ToolSpec, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self._spec = spec
+        self.finished.connect(self._release)
+
+    def start(self) -> None:
+        _ACTIVE.add(self)
+        super().start()
+
+    def _release(self) -> None:
+        self.wait()
+        _ACTIVE.discard(self)
+
+    def run(self) -> None:
+        try:
+            installed = tools.install(
+                self._spec,
+                progress=lambda done, total: self.progress.emit(done, total),
+                cancelled=self.isInterruptionRequested,
+            )
+        except tools.ToolCancelled:
+            return
+        except tools.ToolError as exc:
+            self.failed.emit(str(exc))
+            return
+        self.succeeded.emit(", ".join(p.name for p in installed))
 
 
 def shutdown_tasks() -> None:
